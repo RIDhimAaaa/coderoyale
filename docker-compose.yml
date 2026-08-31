@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: coderoyale
+      POSTGRES_PASSWORD: coderoyale
+      POSTGRES_DB: coderoyale
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coderoyale"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend/api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://coderoyale:coderoyale@postgres:5432/coderoyale
+      REDIS_URL: redis://redis:6379/0
+      EXECUTOR_URL: http://executor:8001
+      SEED_ON_START: "1"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status==200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  executor:
+    build: ./backend/executor
+    env_file: .env
+    environment:
+      RUNNER_IMAGE_PYTHON: coderoyale-runner-python:latest
+      MAX_CONCURRENCY: "4"
+    ports:
+      - "8001:8001"
+    # The executor is the ONLY service granted access to the Docker socket.
+    # Untrusted user code runs in throwaway containers it spawns on the host daemon.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8001/health').status==200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The thin Next.js client is added in Phase 4. Run it with the "web" profile:
+  #   docker compose --profile web up
+  web:
+    build: ./frontend
+    profiles: ["web"]
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
